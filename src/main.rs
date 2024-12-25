@@ -2,9 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use clap::Parser;
 use log::info;
-use rand_core::OsRng;
 use russh::{
-    keys::{self, Certificate, PrivateKey},
     server::{self, Msg, Server as _, Session},
     Channel, ChannelId, CryptoVec, Preferred,
 };
@@ -36,15 +34,18 @@ async fn main() -> Result<()> {
     // Load config file using confy
     let rust_tunnel_conf: RustTunnelConfig = confy::load("rust-tunnel", Some("rustunnel-conf"))?;
 
+    let server_keys = rust_tunnel::get_server_keys(rust_tunnel_conf.server_keys.as_ref())?;
+    info!(
+        "Using following server keys: {:?}",
+        rust_tunnel_conf.server_keys
+    );
+
+    // Build russh server config using confy config
     let server_config = server::Config {
-        inactivity_timeout: Some(rust_tunnel_conf.inactivity_timeout),
-        auth_rejection_time: rust_tunnel_conf.rejection_time,
+        inactivity_timeout: Some(Duration::from_secs(rust_tunnel_conf.inactivity_timeout)),
+        auth_rejection_time: Duration::from_secs(rust_tunnel_conf.rejection_time),
         auth_rejection_time_initial: Some(Duration::from_secs(0)),
-        keys: rust_tunnel_conf
-            .server_keys
-            .iter()
-            .map(|key_bytes| PrivateKey::from_bytes(key_bytes).unwrap())
-            .collect(),
+        keys: server_keys,
         preferred: Preferred {
             ..Preferred::default()
         },
@@ -85,14 +86,7 @@ struct Server {
 }
 
 impl Server {
-    async fn post(&mut self, data: CryptoVec) {
-        let mut clients = self.clients.lock().await;
-        for (id, (channel, ref mut s)) in clients.iter_mut() {
-            if *id != self.id {
-                let _ = s.data(*channel, data.clone()).await;
-            }
-        }
-    }
+    async fn post(&mut self, data: CryptoVec) {}
 }
 
 impl russh::server::Server for Server {
@@ -122,22 +116,6 @@ impl russh::server::Handler for Server {
         }
 
         Ok(true)
-    }
-
-    async fn auth_publickey(
-        &mut self,
-        _: &str,
-        _key: &keys::ssh_key::PublicKey,
-    ) -> Result<russh::server::Auth, Self::Error> {
-        Ok(server::Auth::Accept)
-    }
-
-    async fn auth_openssh_certificate(
-        &mut self,
-        _user: &str,
-        _cert: &Certificate,
-    ) -> Result<server::Auth, Self::Error> {
-        Ok(server::Auth::Accept)
     }
 
     async fn data(
