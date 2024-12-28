@@ -4,23 +4,80 @@ use rand_core::OsRng;
 use russh::keys::{Algorithm, PrivateKey};
 use russh::{
     keys::PublicKey,
-    server::{Auth, Handle, Msg, Session},
+    server::{Auth, Msg, Session},
     Channel, ChannelId,
 };
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{self};
 
 pub mod config;
 
-pub struct SshHandler {}
+pub enum Action {
+    RemoveSession { id: u64 },
+}
+
+pub struct ServerState {
+    next_id: u64,
+    handles: HashMap<u64, russh::server::Handle>,
+    ssh_config: Arc<russh::server::Config>,
+    pub action_rx: mpsc::UnboundedReceiver<Action>,
+    action_tx: mpsc::UnboundedSender<Action>,
+}
+
+impl ServerState {
+    pub fn new(ssh_config: russh::server::Config) -> ServerState {
+        let (action_tx, action_rx) = mpsc::unbounded_channel();
+        let ssh_config = Arc::new(ssh_config);
+
+        ServerState {
+            next_id: 1,
+            handles: HashMap::new(),
+            ssh_config,
+            action_rx,
+            action_tx,
+        }
+    }
+
+    pub async fn new_session(&mut self, stream: TcpStream) -> Result<()> {
+        let config = self.ssh_config.clone();
+        let id = self.next_id;
+        let handler = SshHandler::new(id, self.action_tx.clone());
+        let session = russh::server::run_stream(config, stream, handler).await?;
+        self.handles.insert(id, session.handle());
+        self.next_id += 1;
+        println!("New session added");
+        Ok(())
+    }
+
+    pub fn remove_session(&mut self, id: u64) -> Result<()> {
+        self.handles.remove(&id);
+
+        println!("Session #{} removied", id);
+
+        Ok(())
+    }
+}
+
+pub struct SshHandler {
+    id: u64,
+    action_tx: mpsc::UnboundedSender<Action>,
+}
+
+impl SshHandler {
+    pub fn new(id: u64, action_tx: mpsc::UnboundedSender<Action>) -> SshHandler {
+        SshHandler { id, action_tx }
+    }
+}
 
 #[async_trait]
 impl russh::server::Handler for SshHandler {
     type Error = russh::Error;
 
-    async fn auth_succeeded(&mut self, session: &mut Session) -> Result<(), Self::Error> {
+    async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -33,6 +90,7 @@ impl russh::server::Handler for SshHandler {
         channel: Channel<Msg>,
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
+        let handle = session.handle();
         Ok(true)
     }
 
@@ -64,7 +122,11 @@ impl russh::server::Handler for SshHandler {
 }
 
 impl Drop for SshHandler {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        let id = self.id;
+        self.action_tx.send(Action::RemoveSession { id }).unwrap();
+        println!("dropped");
+    }
 }
 
 // Only supports OpenSSH PEM files currently

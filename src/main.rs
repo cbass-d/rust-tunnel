@@ -4,12 +4,10 @@ use clap::Parser;
 use log::{error, info};
 use russh::{ChannelId, Preferred};
 use rust_tunnel::config::RustTunnelConfig;
-use rust_tunnel::SshHandler;
-use std::sync::Arc;
+use rust_tunnel::{Action, ServerState, SshHandler};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::{self};
-use tokio::task::JoinSet;
 
 #[derive(Parser)]
 struct Args {
@@ -49,19 +47,6 @@ async fn main() -> Result<()> {
         rust_tunnel_conf.server_keys
     );
 
-    // Build russh server config using confy config
-    let server_config = russh::server::Config {
-        inactivity_timeout: Some(Duration::from_secs(rust_tunnel_conf.inactivity_timeout)),
-        auth_rejection_time: Duration::from_secs(rust_tunnel_conf.rejection_time),
-        auth_rejection_time_initial: Some(Duration::from_secs(0)),
-        keys: server_keys,
-        preferred: Preferred {
-            ..Preferred::default()
-        },
-        ..Default::default()
-    };
-    let server_config = Arc::new(server_config);
-
     // Port provided through CLI overrides port in config
     let port = match args.port {
         Some(port) => {
@@ -74,25 +59,39 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Build russh server config using confy config
+    let ssh_config = russh::server::Config {
+        inactivity_timeout: Some(Duration::from_secs(rust_tunnel_conf.inactivity_timeout)),
+        auth_rejection_time: Duration::from_secs(rust_tunnel_conf.rejection_time),
+        auth_rejection_time_initial: Some(Duration::from_secs(0)),
+        keys: server_keys,
+        preferred: Preferred {
+            ..Preferred::default()
+        },
+        ..Default::default()
+    };
+
+    // Initialize server state
+    let mut server_state = ServerState::new(ssh_config);
+
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     info!("Listening on port: {}", port);
-
-    let mut open_sessions = JoinSet::new();
 
     loop {
         tokio::select! {
             _ = signal::ctrl_c() => break,
             Ok((s, peer_addr)) = listener.accept() => {
-                let server_config = server_config.clone();
-                let handler = SshHandler{};
-                let session = russh::server::run_stream(server_config, s, handler).await?;
-                println!("bbb");
-                open_sessions.spawn(session);
+                server_state.new_session(s).await.map_err(|err| format!("Unable to add new session: {}", err));
+            },
+            Some(action) = server_state.action_rx.recv() => {
+                match action {
+                    Action::RemoveSession { id } => {
+                        server_state.remove_session(id).unwrap();
+                    }
+                }
             },
         }
     }
-
-    open_sessions.join_all().await;
 
     Ok(())
 }
