@@ -13,19 +13,32 @@ use std::fs;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self};
+use tokio::task::{AbortHandle, JoinSet};
 
 pub mod config;
 
 pub enum Action {
-    RemoveSession { id: u64 },
+    StoreChannel {
+        id: ChannelId,
+        channel: Channel<Msg>,
+    },
+    RemoveSession {
+        id: u64,
+    },
+    RemoveChannel {
+        channel_id: ChannelId,
+        session_id: u64,
+    },
 }
 
 pub struct ServerState {
     next_id: u64,
-    handles: HashMap<u64, russh::server::Handle>,
+    channels: HashMap<ChannelId, Channel<Msg>>,
+    sessions: HashMap<u64, AbortHandle>,
     ssh_config: Arc<russh::server::Config>,
     pub action_rx: mpsc::UnboundedReceiver<Action>,
     action_tx: mpsc::UnboundedSender<Action>,
+    session_tasks: JoinSet<Result<(), russh::Error>>,
 }
 
 impl ServerState {
@@ -35,46 +48,64 @@ impl ServerState {
 
         ServerState {
             next_id: 1,
-            handles: HashMap::new(),
+            channels: HashMap::new(),
+            sessions: HashMap::new(),
             ssh_config,
             action_rx,
             action_tx,
+            session_tasks: JoinSet::new(),
         }
     }
 
     pub async fn new_session(&mut self, stream: TcpStream) -> Result<()> {
         let config = self.ssh_config.clone();
         let id = self.next_id;
-        let handler = SshHandler::new(id, self.action_tx.clone());
+        let handler = SshSession::new(id, self.action_tx.clone());
         let session = russh::server::run_stream(config, stream, handler).await?;
-        self.handles.insert(id, session.handle());
+
+        let abort_handle = self.session_tasks.spawn(session);
+        self.sessions.insert(id, abort_handle);
         self.next_id += 1;
-        println!("New session added");
         Ok(())
+    }
+
+    pub fn store_channel(&mut self, id: ChannelId, channel: Channel<Msg>) {
+        self.channels.insert(id, channel);
+    }
+
+    pub fn get_channel(&mut self, id: ChannelId) -> Option<Channel<Msg>> {
+        self.channels.remove(&id)
     }
 
     pub fn remove_session(&mut self, id: u64) -> Result<()> {
-        self.handles.remove(&id);
+        let abort_handle = self
+            .sessions
+            .get(&id)
+            .expect("Abort handle not found for session");
 
-        println!("Session #{} removied", id);
+        abort_handle.abort();
 
         Ok(())
     }
+
+    pub fn remove_channel(&mut self, channel_id: ChannelId) {
+        self.channels.remove(&channel_id);
+    }
 }
 
-pub struct SshHandler {
+pub struct SshSession {
     id: u64,
     action_tx: mpsc::UnboundedSender<Action>,
 }
 
-impl SshHandler {
-    pub fn new(id: u64, action_tx: mpsc::UnboundedSender<Action>) -> SshHandler {
-        SshHandler { id, action_tx }
+impl SshSession {
+    pub fn new(id: u64, action_tx: mpsc::UnboundedSender<Action>) -> SshSession {
+        SshSession { id, action_tx }
     }
 }
 
 #[async_trait]
-impl russh::server::Handler for SshHandler {
+impl russh::server::Handler for SshSession {
     type Error = russh::Error;
 
     async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
@@ -88,9 +119,13 @@ impl russh::server::Handler for SshHandler {
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
-        session: &mut Session,
+        _session: &mut Session,
     ) -> Result<bool, Self::Error> {
-        let handle = session.handle();
+        let id = channel.id();
+        let _ = self
+            .action_tx
+            .send(Action::StoreChannel { id, channel })
+            .unwrap();
         Ok(true)
     }
 
@@ -101,6 +136,35 @@ impl russh::server::Handler for SshHandler {
     ) -> Result<(), Self::Error> {
         let handle = session.handle();
         handle.close(channel).await.unwrap();
+
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let channel_id = channel;
+        let session_id = self.id;
+        let _ = self.action_tx.send(Action::RemoveChannel {
+            channel_id,
+            session_id,
+        });
+
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        println!("requested: {name}");
+
+        if name == "sftp" {}
+
         Ok(())
     }
 
@@ -121,11 +185,10 @@ impl russh::server::Handler for SshHandler {
     }
 }
 
-impl Drop for SshHandler {
+impl Drop for SshSession {
     fn drop(&mut self) {
         let id = self.id;
-        self.action_tx.send(Action::RemoveSession { id }).unwrap();
-        println!("dropped");
+        let _ = self.action_tx.send(Action::RemoveSession { id });
     }
 }
 

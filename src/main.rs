@@ -1,10 +1,9 @@
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
+use anyhow::Result;
 use clap::Parser;
 use log::{error, info};
-use russh::{ChannelId, Preferred};
+use russh::Preferred;
 use rust_tunnel::config::RustTunnelConfig;
-use rust_tunnel::{Action, ServerState, SshHandler};
+use rust_tunnel::{Action, ServerState};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::{self};
@@ -79,14 +78,25 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
-            _ = signal::ctrl_c() => break,
-            Ok((s, peer_addr)) = listener.accept() => {
-                server_state.new_session(s).await.map_err(|err| format!("Unable to add new session: {}", err));
+            _ = signal::ctrl_c() => {
+                info!("Shutting down server");
+                break;
+            },
+            Ok((s, _peer_addr)) = listener.accept() => {
+                let _ = server_state.new_session(s).await.map_err(|err| format!("Unable to add new session: {}", err));
             },
             Some(action) = server_state.action_rx.recv() => {
                 match action {
+                    Action::StoreChannel{ id, channel } => {
+                        server_state.store_channel(id, channel);
+                    }
                     Action::RemoveSession { id } => {
                         server_state.remove_session(id).unwrap();
+                        info!("Session #{id} closed");
+                    }
+                    Action::RemoveChannel { channel_id, session_id } => {
+                        server_state.remove_channel(channel_id);
+                        info!("Channel {} closed in Session #{}", channel_id, session_id);
                     }
                 }
             },
