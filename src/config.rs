@@ -7,7 +7,6 @@ pub struct RustTunnelConfig {
     pub server_keys: Vec<String>,
     pub inactivity_timeout: u64,
     pub rejection_time: u64,
-    pub routes: Vec<String>,
 }
 
 impl std::default::Default for RustTunnelConfig {
@@ -17,7 +16,6 @@ impl std::default::Default for RustTunnelConfig {
             server_keys: vec![],
             inactivity_timeout: 3600,
             rejection_time: 3,
-            routes: vec![],
         }
     }
 }

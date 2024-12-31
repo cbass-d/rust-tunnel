@@ -1585,6 +1585,7 @@ dependencies = [
  "log",
  "rand_core",
  "russh",
+ "russh-sftp",
  "serde",
  "tokio",
 ]
