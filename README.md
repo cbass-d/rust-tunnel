@@ -20,5 +20,3 @@ Using cargo:
 $ cargo run   # Uses port specified in config file
 $ cargo run -- --port ${port-number}    # Custom port
 ```
-
-

@@ -6,9 +6,15 @@ use russh::{
     server::{Auth, Msg, Session},
     Channel, ChannelId,
 };
-use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode, Version};
-use std::collections::HashMap;
-use tokio::fs;
+use russh_sftp::protocol::{
+    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+};
+use std::fs::Metadata;
+use std::{collections::HashMap, io::SeekFrom};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncSeekExt},
+};
 
 #[derive(Default)]
 pub struct ServerHandler {
@@ -91,7 +97,8 @@ impl russh::server::Handler for ServerHandler {
 
 #[derive(Default)]
 pub struct SFTPHandler {
-    root_dir_read_done: bool,
+    dir_read_done: bool,
+    file_read_done: bool,
 }
 
 #[async_trait]
@@ -113,7 +120,7 @@ impl russh_sftp::server::Handler for SFTPHandler {
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
         if let Ok(_) = fs::File::open(&path).await {
-            self.root_dir_read_done = false;
+            self.dir_read_done = false;
             Ok(Handle { id, handle: path })
         } else {
             Err(StatusCode::NoSuchFile)
@@ -130,7 +137,7 @@ impl russh_sftp::server::Handler for SFTPHandler {
     }
 
     async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
-        if !self.root_dir_read_done {
+        if !self.dir_read_done {
             if let Ok(mut entries) = fs::read_dir(handle).await {
                 let mut files = Vec::new();
                 while let Some(entry) = entries.next_entry().await.unwrap() {
@@ -141,7 +148,7 @@ impl russh_sftp::server::Handler for SFTPHandler {
                         attrs: FileAttributes::default(),
                     });
                 }
-                self.root_dir_read_done = true;
+                self.dir_read_done = true;
 
                 return Ok(Name { id, files });
             }
@@ -160,5 +167,85 @@ impl russh_sftp::server::Handler for SFTPHandler {
                 attrs: FileAttributes::default(),
             }],
         })
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        if let Ok(file) = fs::File::open(&path).await {
+            let metadata = file.metadata().await.unwrap();
+            Ok(Attrs {
+                id,
+                attrs: FileAttributes::from(&metadata),
+            })
+        } else {
+            Err(StatusCode::NoSuchFile)
+        }
+    }
+
+    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        if let Ok(file) = fs::File::open(&path).await {
+            let metadata = file.metadata().await.unwrap();
+            let fileattrs = FileAttributes::from(&metadata);
+            Ok(Attrs {
+                id,
+                attrs: FileAttributes::from(&metadata),
+            })
+        } else {
+            Err(StatusCode::NoSuchFile)
+        }
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+        if let Ok(file) = fs::File::open(&handle).await {
+            let metadata = file.metadata().await.unwrap();
+            Ok(Attrs {
+                id,
+                attrs: FileAttributes::from(&metadata),
+            })
+        } else {
+            Err(StatusCode::NoSuchFile)
+        }
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, Self::Error> {
+        if !self.file_read_done {
+            if let Ok(mut file) = fs::File::open(&handle).await {
+                let mut buf: Vec<u8> = vec![0; len as usize];
+                let n = file.read(&mut buf).await.unwrap();
+                self.file_read_done = true;
+
+                return Ok(Data {
+                    id,
+                    data: buf[..n].to_vec(),
+                });
+            } else {
+                return Err(StatusCode::NoSuchFile);
+            }
+        }
+
+        Err(StatusCode::Eof)
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        pflags: OpenFlags,
+        attrs: FileAttributes,
+    ) -> Result<Handle, Self::Error> {
+        if let Ok(_) = fs::try_exists(&filename).await {
+            let file = self.file_read_done = false;
+            Ok(Handle {
+                id,
+                handle: filename,
+            })
+        } else {
+            Err(StatusCode::NoSuchFile)
+        }
     }
 }
