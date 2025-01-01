@@ -20,3 +20,9 @@ Using cargo:
 $ cargo run   # Uses port specified in config file
 $ cargo run -- --port ${port-number}    # Custom port
 ```
+
+### SFTP
+SFTP can be used using an SFTP client, an example is:
+```
+$ sftp -P {port} {server address}
+```
