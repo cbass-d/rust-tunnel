@@ -1,10 +1,10 @@
-pub mod config;
-pub mod server;
-
 use anyhow::Result;
 use rand_core::OsRng;
 use russh::keys::{Algorithm, PrivateKey};
 use std::{ffi::OsString, fs};
+
+pub mod config;
+pub mod server;
 
 // Only supports OpenSSH PEM files currently
 pub fn get_server_keys(paths: &Vec<String>) -> Result<Vec<PrivateKey>> {

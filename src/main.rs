@@ -16,6 +16,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set logging level
     match std::env::var("RUST_LOG") {
         Ok(_) => {}
         Err(_) => {
@@ -47,7 +48,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Build russh server config using confy config
+    // Build russh server config using provided confy config
     let russh_config = russh::server::Config {
         inactivity_timeout: Some(Duration::from_secs(rust_tunnel_conf.inactivity_timeout)),
         auth_rejection_time: Duration::from_secs(rust_tunnel_conf.rejection_time),
