@@ -18,6 +18,7 @@ pub fn get_server_keys(paths: &Vec<String>) -> Result<Vec<PrivateKey>> {
 
     let mut keys: Vec<PrivateKey> = Vec::new();
 
+    // Extract keys from OpenSSH PEM files
     for path in paths {
         let path = OsString::from(path);
         let data = fs::read(path)?;

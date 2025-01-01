@@ -21,7 +21,9 @@ pub async fn run_server(bind_addr: String, russh_config: Config) -> Result<()> {
             Ok((stream, addr)) = listener.accept() => {
                 let config = config.clone();
                 let handler = ServerHandler::default();
-                let _russh_session = russh::server::run_stream(config, stream, handler).await?;
+                let _russh_session = russh::server::run_stream(config, stream, handler)
+                    .await
+                    .map_err(|err| format!("russh stream error: {}", err));
 
                 info!("New session from: {addr}");
             }

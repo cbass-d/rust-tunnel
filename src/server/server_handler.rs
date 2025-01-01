@@ -9,8 +9,8 @@ use russh::{
 use russh_sftp::protocol::{
     Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
 };
-use std::fs::Metadata;
-use std::{collections::HashMap, io::SeekFrom};
+use std::collections::HashMap;
+use std::io::SeekFrom;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt},
@@ -99,6 +99,8 @@ impl russh::server::Handler for ServerHandler {
 pub struct SFTPHandler {
     dir_read_done: bool,
     file_read_done: bool,
+    cur_file_size: u64,
+    file_bytes_read: u64,
 }
 
 #[async_trait]
@@ -172,6 +174,7 @@ impl russh_sftp::server::Handler for SFTPHandler {
     async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         if let Ok(file) = fs::File::open(&path).await {
             let metadata = file.metadata().await.unwrap();
+            self.cur_file_size = metadata.len();
             Ok(Attrs {
                 id,
                 attrs: FileAttributes::from(&metadata),
@@ -184,7 +187,6 @@ impl russh_sftp::server::Handler for SFTPHandler {
     async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         if let Ok(file) = fs::File::open(&path).await {
             let metadata = file.metadata().await.unwrap();
-            let fileattrs = FileAttributes::from(&metadata);
             Ok(Attrs {
                 id,
                 attrs: FileAttributes::from(&metadata),
@@ -216,8 +218,15 @@ impl russh_sftp::server::Handler for SFTPHandler {
         if !self.file_read_done {
             if let Ok(mut file) = fs::File::open(&handle).await {
                 let mut buf: Vec<u8> = vec![0; len as usize];
+                file.seek(SeekFrom::Start(offset)).await.unwrap();
                 let n = file.read(&mut buf).await.unwrap();
-                self.file_read_done = true;
+
+                self.file_bytes_read += n as u64;
+
+                if self.file_bytes_read >= self.cur_file_size {
+                    self.file_read_done = true;
+                    self.file_bytes_read = 0;
+                }
 
                 return Ok(Data {
                     id,
@@ -235,7 +244,7 @@ impl russh_sftp::server::Handler for SFTPHandler {
         &mut self,
         id: u32,
         handle: String,
-        offset: u64,
+        _offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
         match fs::write(handle, data).await {
@@ -245,7 +254,12 @@ impl russh_sftp::server::Handler for SFTPHandler {
                 error_message: "Ok".to_string(),
                 language_tag: "en-US".to_string(),
             }),
-            Err(_) => Err(StatusCode::Failure),
+            Err(e) => Ok(Status {
+                id,
+                status_code: StatusCode::Failure,
+                error_message: e.to_string(),
+                language_tag: "en-US".to_string(),
+            }),
         }
     }
 
@@ -257,7 +271,12 @@ impl russh_sftp::server::Handler for SFTPHandler {
                 error_message: "Ok".to_string(),
                 language_tag: "en-US".to_string(),
             }),
-            Err(_) => Err(StatusCode::Failure),
+            Err(e) => Ok(Status {
+                id,
+                status_code: StatusCode::Failure,
+                error_message: e.to_string(),
+                language_tag: "en-US".to_string(),
+            }),
         }
     }
 
@@ -282,7 +301,7 @@ impl russh_sftp::server::Handler for SFTPHandler {
         &mut self,
         id: u32,
         path: String,
-        attrs: FileAttributes,
+        _attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
         match fs::create_dir(&path).await {
             Ok(()) => Ok(Status {
@@ -304,17 +323,12 @@ impl russh_sftp::server::Handler for SFTPHandler {
         &mut self,
         id: u32,
         filename: String,
-        pflags: OpenFlags,
-        attrs: FileAttributes,
+        _pflags: OpenFlags,
+        _attrs: FileAttributes,
     ) -> Result<Handle, Self::Error> {
-        if let Ok(_) = fs::try_exists(&filename).await {
-            let file = self.file_read_done = false;
-            Ok(Handle {
-                id,
-                handle: filename,
-            })
-        } else {
-            Err(StatusCode::NoSuchFile)
-        }
+        Ok(Handle {
+            id,
+            handle: filename,
+        })
     }
 }
