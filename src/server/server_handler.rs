@@ -231,6 +231,75 @@ impl russh_sftp::server::Handler for SFTPHandler {
         Err(StatusCode::Eof)
     }
 
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, Self::Error> {
+        match fs::write(handle, data).await {
+            Ok(()) => Ok(Status {
+                id,
+                status_code: StatusCode::Ok,
+                error_message: "Ok".to_string(),
+                language_tag: "en-US".to_string(),
+            }),
+            Err(_) => Err(StatusCode::Failure),
+        }
+    }
+
+    async fn remove(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+        match fs::remove_file(&handle).await {
+            Ok(()) => Ok(Status {
+                id,
+                status_code: StatusCode::Ok,
+                error_message: "Ok".to_string(),
+                language_tag: "en-US".to_string(),
+            }),
+            Err(_) => Err(StatusCode::Failure),
+        }
+    }
+
+    async fn rmdir(&mut self, id: u32, path: String) -> Result<Status, Self::Error> {
+        match fs::remove_dir(&path).await {
+            Ok(()) => Ok(Status {
+                id,
+                status_code: StatusCode::Ok,
+                error_message: "Ok".to_string(),
+                language_tag: "en-US".to_string(),
+            }),
+            Err(e) => Ok(Status {
+                id,
+                status_code: StatusCode::Failure,
+                error_message: e.to_string(),
+                language_tag: "en-US".to_string(),
+            }),
+        }
+    }
+
+    async fn mkdir(
+        &mut self,
+        id: u32,
+        path: String,
+        attrs: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        match fs::create_dir(&path).await {
+            Ok(()) => Ok(Status {
+                id,
+                status_code: StatusCode::Ok,
+                error_message: "Ok".to_string(),
+                language_tag: "en-US".to_string(),
+            }),
+            Err(e) => Ok(Status {
+                id,
+                status_code: StatusCode::Failure,
+                error_message: e.to_string(),
+                language_tag: "en-US".to_string(),
+            }),
+        }
+    }
+
     async fn open(
         &mut self,
         id: u32,
